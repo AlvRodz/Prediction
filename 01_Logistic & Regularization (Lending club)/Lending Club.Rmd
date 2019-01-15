@@ -1,0 +1,492 @@
+---
+title: "Lending Club"
+author: "Alvaro Rodríguez"
+date: "20 Noviembre 2018"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    number_sections: true
+---
+![](images/LendingClub.png)
+
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# PACKAGES 
+if (!require("dplyr")) install.packages("dplyr")
+if (!require("DescTools")) install.packages("DescTools")
+if (!require("ggplot2")) install.packages("ggplot2")
+if (!require("caTools")) install.packages("caTools")
+if (!require("MASS")) install.packages("MASS")
+if (!require("leaps")) install.packages("leaps")
+if (!require("gmodels")) install.packages("gmodels")
+if (!require("verification")) install.packages("verification")
+if (!require("ROCR")) install.packages("ROCR")
+if (!require("e1071")) install.packages("e1071")
+if (!require("ROSE")) install.packages("ROSE")
+if (!require("caret")) install.packages("caret")
+if (!require("rsample")) install.packages("rsample")
+if (!require("glmnet")) install.packages("glmnet")
+if (!require("AmesHousing")) install.packages("AmesHousing")
+if (!require("stringr")) install.packages("stringr")
+if (!require("pdp")) install.packages("pdp")
+if (!require("knitr")) install.packages("knitr")
+library(dplyr)
+library(DescTools)
+library(ggplot2)
+library(caTools)
+library(MASS)
+library(leaps)
+library(gmodels)
+library(verification)
+library(ROCR)
+library(e1071)
+library(ROSE)
+library(caret)
+library(rsample)
+library(glmnet)
+library(AmesHousing)
+library(stringr)
+library(pdp)
+library(knitr)
+
+```
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+# reading from csv
+loan <- read.csv("data/LoanStats_2016Q4.csv",skip = 1,na.strings = c("","n/a"))
+
+```
+
+
+# Resumen ejecutivo
+
+Análisis de los datos de LENDING CLUB -plataforma de préstamos entre particulares- correspondientes al cuarto trimestre de 2016 con el objeto de predecir que deudores incumplirán las obligaciones de pago de sus respectivos créditos.
+
+En primer lugar, analizamos la base de datos. Una vez escogidas las variables, entrenamos un modelo una regresión logística y testeamos su capacidad predictiva.
+
+Dado que la muestra está claramente desbalanceada, se llevan a cabo métodos de regularización para mejorar la eficiencia. El método que mejor precisión nos permite es LASSO.
+
+
+# Objetivos
+
+El objeto de este informe es predecir los “Default” o incumplimientos que se producirán en la cartera de créditos de “LENDING CLUB” (LC en adelante), con base en las distintas variables explicativas que tenemos disponibles.
+
+
+# Datos
+
+La información correspondiente al cuarto trimestre de 2016 de LC. Se encuentra disponible en el siguiente enlace: 
+
+https://www.lendingclub.com/info/download-data.action
+
+Los datos constan inicialmente de 103.548 observaciones y 145 variables.
+
+**Variables sin valor predictivo**:
+Las variables (“member_id”, “ISIN”, “url”) tienen un valor identificativo, pero no resultan relevantes para ser considerados en adelante.
+
+**Variables con valores vacíos**:
+Muchas de las variables tienen valores vacíos, observándose que algunas de ellas tienes unos pocos valores vacíos y otras tienen todos o la gran mayoría.
+No se han considerado aquellas variables con más del 10 % de valores vacíos, precisamente para eliminar solo aquellas variables con mayor cantidad de valores vacíos.
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+n.fil <- nrow(loan)
+
+n.col <- ncol(loan)
+
+# calculate NAs for each variable
+variables.na <- data.frame("Nombre",0,0)
+colnames(variables.na) <- c("Variable","Number","% NA")
+
+for (i in (1:n.col)) { 
+  Porcentaje <- round(sum(is.na(loan[,i])) / n.fil,3)
+  variable.na <- data.frame(cbind(colnames(loan[i]),i,Porcentaje))
+  colnames(variable.na) <- c("Variable","Number","% NA")
+  if (Porcentaje > 0.1) {variables.na = rbind(variables.na,variable.na)}
+}
+
+
+
+# Eliminate the NA variables
+
+eliminate <- as.numeric(variables.na[-1,]$Number)
+loan.variables.complete <- loan[,-eliminate]
+
+
+######
+# OTHER MISSING VALUES
+
+loan.clean <- na.omit(loan.variables.complete)
+
+######
+
+row.inicial <- dim(loan)[1]
+col.inicial <- dim(loan)[2]
+row.filter1 <- dim(loan.variables.complete)[1]
+col.filter1 <- dim(loan.variables.complete)[2]
+row.filter2 <- dim(loan.clean)[1]
+col.filter2 <- dim(loan.clean)[2]
+
+cat("La dimensión inicial es ",row.inicial," filas, por",col.inicial,"columnas.")
+cat("Después de eliminar las variables vacías, la dimensión es:",
+            row.filter1,"filas y",col.filter1, "columnas.")
+cat("Por último, después de eliminar las observaciones con algún campo vacío es ",
+            row.filter2,"filas y",col.filter2,"columnas")
+
+
+
+
+
+```
+**Dimension final**
+Así las cosas, La dimensión inicial era de  103548  filas, por 145 columnas. 
+Después de eliminar las variables vacías, la dimensión era de: 103548 filas y 99 columnas.
+Por último, después de eliminar las observaciones con algún campo vacío, la dimensión definitiva es  87809 filas y 99 columnas.
+
+# Análisis exploratorio de datos
+
+Exploramos aquellas variables que resultan más interesantes:
+
+- La variable que se va a utilizar como variable dependiente ($y$) es **"loan_status"**. Esta columna del dataset describe el estado en el que se encuentra cada uno de los créditos.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+Desc(loan.clean$loan_status, plotit = F, main = "PORTFOLIO 2016 Q4 - Loan Status")
+
+```
+
+- En el siguiente gráfico, se relacionan las variables cantidad prestada ("loan_amnt") y estatus de los créditos.
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+box_status <- ggplot(loan.clean, aes(loan_status, loan_amnt))
+box_status + geom_boxplot(aes(fill = loan_status)) +
+  theme(axis.text.x = element_blank()) + labs(
+    title = "Loan amount by status",
+    x = "Status",
+    y = "Amount")  
+```
+
+
+- Asimismo, LC ya asigna un **“grade”** o grado de calificación de cada crédito. Este es previsiblemente uno de los factores claves que no ayudará a predecir los incumplimientos, los valores van desde A (mínimo riesgo) hasta G (máximo riesgo).
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Grade
+Desc(loan.clean$grade, plotit = F, main="PORTFOLIO 2016 Q4 - Grades")
+
+```
+
+
+- Los tipos de interés (**int_rate**) aplicados que también resultan verdaderamente interesantes, ya que aquellos deudores con más riesgo se les exigirá (previsiblemente) un mayor interés en el pago.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Interest Rate
+ggplot(loan.clean , aes(x = grade , y = int_rate , fill = grade)) + 
+  geom_boxplot(aes(fill = grade)) +  
+  labs(y = 'Interest Rate' , x = 'Grade')
+```
+
+
+- Se visualiza el propósito para el que se solicita cada crédito (“purpose”), se representa el volumen de créditos que se ha concedido en cada categoría (“loan_amnt”) y además, se identifica el estatus en el que se encuentran (“loan_status”).
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Loan Purpose
+ggplot(data = loan.clean, aes(x = reorder(purpose,loan_amnt),y=loan_amnt,fill=loan_status))+geom_bar(stat="identity")+theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+```
+
+
+# Tratamiento previo al análisis
+
+Sobre aquellas variables que se les presupone mayor valor explicativo sobre el Default se han llevado a cabo algunas modificaciones:
+
+- **Variables Seleccionadas**: Dado que todavía conservamos muchas variables, solo utilizaremos las variables indicadas a continuación, ya que son aquellas que mayor capacidad tienen para explicar la variable dependiente (se comprueba con consistencia que sus respectivos coeficientes son distitnos de cero.). Las variables son: "loan_status", "grade", "sub_grade", "open_acc", "pub_rec", "dti", "delinq_2yrs", "inq_last_6mths", "emp_length", "annual_inc", "home_ownership",  "purpose", "addr_state", "loan_amnt", "int_rate", "installment", "issue_d", "revol_bal" y "revol_util".
+
+
+-	**Loan Status**:A partir de esta variable, definiremos que es Default y que no lo es. Se considera Default aquellos créditos que tenían el estatus “Charged Off” (tradicionalmente vencidas +180 días), “Default” (Solo hay unas pocas observaciones de este tipo) y todo aquellos que suponen retraso (de 16-30 días y de 31-120 días). Tomamos como no default el resto de posibles valores (“Fully Paid”, "Current", etc).
+
+
+-	**Annual_inc**: Esta variable referente a los ingresos anuales de los deudores, se ha categorizado en 10 grupos, conforme a los correspondientes percentiles de su distribución. El motivo es la disparidad de valores y la presencia de valores atípicos.
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+##############################################################
+##############################################################
+# PRE-ANALYSIS  ##############################################
+
+
+# Variables selection
+cols <- c("loan_status", "grade", "sub_grade", "open_acc","pub_rec", "dti", "delinq_2yrs",
+          "inq_last_6mths", "emp_length", "annual_inc", "home_ownership",  "purpose", "addr_state",
+          "loan_amnt","int_rate", "installment", "issue_d", "revol_bal", "revol_util")
+
+loan.data <- subset(loan.clean, select = cols) 
+
+dim(loan.data)
+
+str(loan.data)
+# LOAN STATUS: changing the variable into 0 or 1.
+default<-c("Charged Off","Default","Late (31-120 days)","In Grace Period","Late (16-30 days") # 1 for default credits,otherwise,0.
+loan.data$loan_status <- ifelse(loan.data$loan_status %in% default,1,0)
+
+table(loan.data$loan_status)
+
+#EMP_LENGTH standarise
+loan_emp_length_clean<-sub("(\\d)[^0-9]+$", "\\1", loan.clean$emp_length)
+loan_emp_length_clean<-gsub("< 1", "0", loan_emp_length_clean)
+loan.clean$emp_length<-loan_emp_length_clean
+table(loan.clean$emp_length)
+
+#ANNUAL_INC standarise
+qqnorm(loan.data$annual_inc, pch = 1,frame = FALSE)
+qqline(loan.data$annual_inc, col = "steelblue") # heavy tailed distribution
+loan.data$annual_inc<-cut(loan.data$annual_inc, breaks=quantile(loan.data$annual_inc, seq(0,1, length.out=11)), include.lowest=T, labels=F)
+table(loan.data$annual_inc) # categorized in 10 groups.
+
+
+# REVOL_UTIL from % to number
+loan.data[,"revol_util"] <- as.numeric(sub("%", "",loan.data$"revol_util", fixed =TRUE))/100
+class(loan.data$revol_util)
+qqnorm(loan.data$revol_util, pch = 1,frame = FALSE)
+qqline(loan.data$revol_util, col = "steelblue")
+
+
+#INT_RATE from % to number
+loan.data$int_rate <- as.numeric(sub("%","",loan.data$int_rate))
+loan.data$int_rate <- loan.data$int_rate / 100
+class(loan.data$int_rate) 
+qqnorm(loan.data$int_rate, pch = 1,frame = FALSE)
+qqline(loan.data$int_rate, col = "steelblue")
+
+
+#LOAN_AMNT
+qqnorm(loan.data$loan_amnt, pch = 1,frame = FALSE)
+qqline(loan.data$loan_amnt, col = "steelblue")
+
+
+# INSTALLMENT
+qqnorm(loan.data$installment, pch = 1,frame = FALSE)
+qqline(loan.data$installment, col = "steelblue")
+
+# PURPOSE
+
+
+loan.data<-subset(loan.data,loan.data$purpose !="wedding")
+
+anyNA(loan.data)
+dim(loan.data)
+
+```
+
+# Regresión logística
+
+Llegados a este punto, realizamos la regresión logística. Para ello se utiliza un 70% de la muestra como datos de entrenamiento, mientras que el 30 % restante se usa para testear el modelo resultante.
+
+Se hace uso del método de selección de variables “stepwise” mixto, que nos permite con la selección anterior de variables, reducir el modelo, mejorando la bondad del ajuste conforme al criterio de información de Akaike. 
+
+El modelo usado finalmente es:
+loan_status ~ grade + open_acc + pub_rec + dti + delinq_2yrs + inq_last_6mths + emp_length + annual_inc +  home_ownership + addr_state + loan_amnt + revol_bal + revol_util.
+
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+##############################################################
+##############################################################
+# MODEL  #####################################################
+
+modelo<-loan.data
+
+# TRAINING AND TEST SAMPLES
+set.seed(1234)
+n=nrow(modelo)
+id_train <- sample(1:n , 0.7*n)
+train.data = modelo[id_train,]
+test.data = modelo[-id_train,]
+
+
+# REGRESSION
+regression <- glm(loan_status ~ ., family = "binomial", data = train.data)
+
+
+
+# PROBABILITY PREDICT
+x <- as.data.frame(predict(regression,type="response"))
+colnames(x)<- "Prediccion"
+
+ggplot(x)+geom_histogram(aes(x$Prediccion),fill = "steelblue")+labs(title = "PROBABILITY FORECAST FOR OBSERVATION")+ xlab("Valores Predicción") +
+  ylab("Recuento") 
+
+
+```
+
+Se observa que la mayoría de créditos tienen valores cercanos a cero (No default), mientras que muy pocos de ellos rebasan el 0.5 de valor predicho por la regresión logística. 
+
+# Predicción sobre la regresión logística
+
+
+A partir de aquí, es preciso establecer una regla de decisión. n este caso habría que valorar el riesgo de conceder un crédito a una persona que finalmente no pueda pagarlo contra el riesgo de rechazar a alguien que pudiera haber cumplido sus obligaciones. 
+Si estableciéramos esta regla de decisión(“cut-off”) en 0.2, y predijéramos con las variables entrenadas sobre la parte de test, obtendríamos los siguientes resultados:
+
+
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+##############################################################
+##############################################################
+# PREDICTION  ################################################
+
+# CUT OFF 0.15
+
+# TRAIN
+
+prob.glm1.insample <- predict(regression,type="response")
+predicted.glm1.insample <- prob.glm1.insample > 0.2
+predicted.glm1.insample <- as.numeric(predicted.glm1.insample)
+
+table.confusion <- table(train.data$loan_status, predicted.glm1.insample, dnn=c("Truth","Predicted"))
+
+# OUT OF SAMPLE
+
+prob.glm1.outsample <- predict(regression,newdata = test.data,type="response")
+predicted.glm1.outsample <-  prob.glm1.outsample > 0.2
+predicted.glm1.outsample <- as.numeric(predicted.glm1.outsample)
+
+# Confusion matrix
+confusion<-confusionMatrix(as.factor(test.data$loan_status),as.factor(predicted.glm1.outsample))
+
+confusion
+# ERROR
+error<-mean(ifelse(test.data$loan_status != predicted.glm1.outsample, 1, 0))
+
+```
+
+
+
+El poder de predicción del modelo logístico con este cut-off es limitado. Los errores de clasificación en el modelo logístico son relevantes.
+
+Se muestra la curva ROC del modelo logístico para el cut-off 0.2. Nuevamente observamos como el valor clasificador del modelo es poco significativo.
+
+Vemos como el modelo con una regla de decisión de 0.5 es más susceptible a predecir que personas que no pagarán sus créditos si lo que los pagarían (131 errores sobre 12.285 por un único error con la regla decisora igual a 0.2). En cambio, el modelo basado en el hiper-parámetro cometes más errores no otorgando créditos a deudores que finalmente si pagaron sus deudas. En cualquier caso, el modelo es más consistente con el parámetro 0.2. El error es significativo en ambas muestras, principalmente por la negación de créditos a deudores que finalmente se hicieron cargo de sus obligaciones.
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# ROC CURVE
+
+pred <- prediction(prob.glm1.outsample, test.data$loan_status)
+perf <- performance(pred, "tpr", "fpr")
+roc<-plot(perf, colorize=TRUE)
+```
+
+
+# Conclusión regresión logística
+
+Mediante una regresión logística basada en las distintas variables de los deudores que se mostraban más arriba, es posible prever -con un error cercano al 20%- que créditos han de otorgarse y cuales no si queremos evitar futuros incumplimientos. El modelo dispone de un hiper-parámetro de corte, en función del cual podemos adaptar la sensibilidad del modelo.
+
+# Regularización
+
+Dado que la muestra esta claramente desbalanceada, llevamos a cabo métodos de regularización para mejorar la predicción que hemos llevado a cabo.
+Podemos aplicar tanto una regresión Ridge (penaliza la inclusión de variables sin eliminarlas, pese a que sus coeficientes sean muy cercanos a cero), una regresión LASSO (nos permite descartar variables) o una regresión elasticnet, que conjuga carácterísticas de uno y otro.
+
+
+Para averiguar cual de las regresión es la que mejor se ajusta a nuestra muestra, probamos tanto Ridge como LASSO, como elastic net con distinto valores para $\alpha$. Se ha mantenido una muestra de entrenamiento del 70% y una muestra de test del 30%.
+
+Se selecciona la regresión que nos da el menor error cuadrático medio en la cross validation que he llevado a cabo (k.folds(8)).
+
+```{r slow, echo=FALSE, message=FALSE, warning=FALSE}
+
+# TRAINING AND TEST SAMPLES
+set.seed(123)
+split <- initial_split(modelo, prop = .7, strata = "loan_status")
+train <- training(split)
+test  <- testing(split)
+
+train_x<-model.matrix(loan_status ~ .,train)[, -1]
+
+# maintain the same folds across all models
+fold_id <- sample(1:3, size = length(train$loan_status), replace=TRUE)
+
+# Tibble for iterate with diferent alphas
+tuning_grid <- tibble(
+  alpha      = seq(0, 1, by = .1),
+  mse_min    = NA,
+  mse_1se    = NA,
+  lambda_min = NA,
+  lambda_1se = NA)
+
+
+for(i in seq_along(tuning_grid$alpha)) {
+  
+  # fit CV model for each alpha value
+  fit <- cv.glmnet(x=train_x, y = train$loan_status, family = "binomial", alpha = tuning_grid$alpha[i],type.measure = "deviance", paralle = TRUE,foldid = fold_id)
+  
+  # extract MSE and lambda values
+  tuning_grid$mse_min[i]    <- fit$cvm[fit$lambda == fit$lambda.min]
+  tuning_grid$mse_1se[i]    <- fit$cvm[fit$lambda == fit$lambda.1se]
+  tuning_grid$lambda_min[i] <- fit$lambda.min
+  tuning_grid$lambda_1se[i] <- fit$lambda.1se
+}
+
+kable(tuning_grid)
+
+
+tuning_grid %>%
+  mutate(se = mse_1se - mse_min) %>%
+  ggplot(aes(alpha, mse_min)) +
+  geom_line(size = 2) +
+  geom_ribbon(aes(ymax = mse_min + se, ymin = mse_min - se), alpha = 0.25) +
+  ggtitle("MSE ± one standard error")
+
+
+
+
+```
+
+
+Conforme a la tabla y gráfico anteriores, concluímos que Lasso será la regresión que nos da mayor precisión.
+
+
+# Regresión LASSO 
+
+En primer lugar visualizamos el coeficiente que LASSO aplica a cada una de las variables y como se van seleccionando.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+lasso <- glmnet(x = train_x, y = train$loan_status, family = "binomial", alpha = 1)
+
+plot(lasso, xvar = "lambda")
+
+```
+
+Analizamos el cross validation que se ha llevado a cabo y los distintos resultados. Seleccionamos el modelo con las mínimas variables dentro de una desviación típica, ya que estadísticamente es equivalente a seleccionar el error mínimo de todas las validaciones.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+lassocv <- cv.glmnet(x = train_x, y = train$loan_status, family = "binomial", alpha = 1, nfolds = 8)
+
+plot(lassocv, xvar = "lambda")
+abline(v = log(lassocv$lambda.1se), col = "red", lty = "dashed")
+
+
+
+```
+
+Representamos las variables seleccionadas por el modelo.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+coef(lassocv, s = "lambda.1se") %>%
+  tidy() %>%
+  filter(row != "(Intercept)") %>%
+  ggplot(aes(value, reorder(row, value), color = value > 0)) +
+  geom_point(show.legend = FALSE) +
+  ggtitle("Influential variables") +
+  xlab("Coefficient") +
+  ylab(NULL)
+
+```
+
+# Conclusiones
+
+
+Cuando nos encontramos con muestras desbalanceadas o con problema de multicolinealidad, resulta conveniente llevar a cabo una regularización de los datos para mejorar la precisión de las estimaciones.
+
